@@ -37,6 +37,7 @@ limitations under the License.
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
+#include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Utils/Utils.h"
 #include "mlir/IR/AffineExpr.h"
@@ -104,22 +105,32 @@ bool VerifyHloOpBufferOrTensorSemantics(Operation* op) {
 
 Value GetInitTensor(OpBuilder& b, Location loc, ShapedType type,
                     ArrayRef<Value> dyn_sizes) {
+  if (sparse_tensor::getSparseTensorEncoding(type))
+    return b.create<sparse_tensor::InitOp>(loc, type, dyn_sizes);
   return b.create<linalg::InitTensorOp>(loc, dyn_sizes, type.getShape(),
                                         type.getElementType());
 }
 
 Value GetInitTensorFor(OpBuilder& b, Location loc, ShapedType result_type,
                        Operation* op, ValueRange operands) {
+  bool is_sparse =
+      sparse_tensor::getSparseTensorEncoding(result_type) != nullptr;
   SmallVector<Value> dyn_sizes;
-  if (result_type.hasRank() && !result_type.hasStaticShape()) {
+  if (result_type.hasRank() && (is_sparse || !result_type.hasStaticShape())) {
     // Ask the op for its output shape.
     auto shape_source = cast<InferShapedTypeOpInterface>(op);
     SmallVector<Value, 1> reified_shapes;
     (void)shape_source.reifyReturnTypeShapes(b, operands, reified_shapes);
     assert(reified_shapes.size() == 1 && "Expected one reified result");
 
+    // Construct sizes for every dynamic dimension (all dimensions when sparse).
     for (auto& en : llvm::enumerate(result_type.getShape())) {
-      if (en.value() != ShapedType::kDynamicSize) continue;
+      if (en.value() != ShapedType::kDynamicSize) {
+        if (is_sparse)
+          dyn_sizes.push_back(
+              b.create<arith::ConstantIndexOp>(loc, en.value()));
+        continue;
+      }
       dyn_sizes.push_back(b.create<tensor::ExtractOp>(
           loc, reified_shapes[0],
           ValueRange{b.create<arith::ConstantIndexOp>(loc, en.index())}));
@@ -2840,7 +2851,8 @@ struct HloLegalizeToLinalgPass
     ConversionTarget target(ctx);
     target.addLegalDialect<arith::ArithmeticDialect, complex::ComplexDialect,
                            linalg::LinalgDialect, math::MathDialect,
-                           tensor::TensorDialect, scf::SCFDialect,
+                           tensor::TensorDialect,
+                           sparse_tensor::SparseTensorDialect, scf::SCFDialect,
                            shape::ShapeDialect>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
