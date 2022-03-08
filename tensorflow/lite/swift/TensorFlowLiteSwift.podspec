@@ -1,6 +1,7 @@
 Pod::Spec.new do |s|
   s.name             = 'TensorFlowLiteSwift'
   s.version          = '2.7.0'
+  s.swift_version    = '5.5.2'
   s.authors          = 'Google Inc.'
   s.license          = { :type => 'Apache' }
   s.homepage         = 'https://github.com/tensorflow/tensorflow'
